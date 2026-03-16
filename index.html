@@ -1011,13 +1011,14 @@
                         </tr>
                     </thead>
 
-                    <tbody id="orderList"></tbody>
-
+                    <tbody id="orderList">
+                        <!-- Rows will be added here dynamically -->
+                    </tbody>
                 </table>
             </div>
 
             <div class="total-container">
-                <span class="total-label">Total Bayar :</span>
+                <span class="total-label">Subtotal Keseluruhan :</span>
                 <span class="total-value">฿ <span id="totalHarga">0</span></span>
             </div>
 
@@ -1050,46 +1051,84 @@
             { id: 6, nama: 'Chocolate Milk', harga: 17000, category: 'HOT', img: 'https://images.unsplash.com/photo-1510626176961-4b57d4fbad03' }
         ];
 
-        let menuItems = [];
-        let allOrders = [];
-        let staffList = [];
-        let isAdmin = false;
+        let menuItems = JSON.parse(localStorage.getItem("menuItems")) || defaultMenu;
+        let allOrders = JSON.parse(localStorage.getItem("allOrders")) || [];
+        let staffList = JSON.parse(localStorage.getItem("staffList")) || [{ id: 1, nama: 'Kelvin', role: 'Owner' }];
+        let isAdmin = localStorage.getItem("isAdmin") === "true";
+
+        // Fungsi pembantu untuk sinkronisasi aman
+        function safeSync(refName, dataObj) {
+            localStorage.setItem(refName, JSON.stringify(dataObj));
+            localStorage.setItem(refName + "_pending", "1"); // Tandai ada perubahan
+            database.ref(refName).set(dataObj).then(() => {
+                localStorage.removeItem(refName + "_pending"); // Hapus tanda jika sukses
+            }).catch(e => {
+                console.warn("Gagal terhubung ke Firebase untuk " + refName + ", data disimpan lokal.");
+            });
+        }
+
+        // Render awal dari local storage agar tidak nunggu Firebase
+        renderMenu();
+        if (typeof renderOrders === "function") renderOrders();
 
         // Mendengarkan perubahan data Menu secara Realtime (Auto Sinkron)
         database.ref('menuItems').on('value', (snapshot) => {
+            if (localStorage.getItem("menuItems_pending")) {
+                database.ref('menuItems').set(menuItems).then(()=>localStorage.removeItem("menuItems_pending")).catch(()=>{});
+                renderMenu();
+                return;
+            }
             const data = snapshot.val();
             if (data) {
                 menuItems = Array.isArray(data) ? data.filter(i => i) : Object.values(data).filter(i => i);
+                localStorage.setItem("menuItems", JSON.stringify(menuItems));
             } else {
-                menuItems = defaultMenu;
-                database.ref('menuItems').set(menuItems);
+                safeSync('menuItems', menuItems);
             }
             renderMenu();
-        });
+        }, (error) => { renderMenu(); });
 
         // Mendengarkan perubahan data Pesanan
         database.ref('allOrders').on('value', (snapshot) => {
             const data = snapshot.val();
+            const pending = localStorage.getItem("allOrders_pending");
+            
+            if (pending) {
+                // Jangan timpa data lokal jika masih ada sinkronisasi berjalan
+                console.log("Firebase listener: skip update (pending local changes)");
+                if (typeof renderOrders === "function") renderOrders();
+                return;
+            }
+            
             if (data) {
+                // Konversi object Firebase ke Array jika perlu
                 allOrders = Array.isArray(data) ? data.filter(i => i) : Object.values(data).filter(i => i);
+                localStorage.setItem("allOrders", JSON.stringify(allOrders));
             } else {
-                allOrders = [];
+                // Jika database kosong, pastikan data lokal juga konsisten jika tidak pending
+                if (allOrders.length > 0 && !pending) {
+                    allOrders = [];
+                    localStorage.setItem("allOrders", JSON.stringify([]));
+                }
             }
             if (typeof renderOrders === "function") renderOrders();
         });
 
         // Mendengarkan perubahan data Staff
         database.ref('staffList').on('value', (snapshot) => {
+            if (localStorage.getItem("staffList_pending")) {
+                database.ref('staffList').set(staffList).then(()=>localStorage.removeItem("staffList_pending")).catch(()=>{});
+                if(document.getElementById("adminModal") && document.getElementById("adminModal").style.display === "flex" && document.getElementById("modalTitle").innerText === "Manajemen Staff") showStaffPanel();
+                return;
+            }
             const data = snapshot.val();
             if (data) {
                 staffList = Array.isArray(data) ? data.filter(i => i) : Object.values(data).filter(i => i);
+                localStorage.setItem("staffList", JSON.stringify(staffList));
             } else {
-                staffList = [{ id: 1, nama: 'Kelvin', role: 'Owner' }];
-                database.ref('staffList').set(staffList);
+                safeSync('staffList', staffList);
             }
-            if(document.getElementById("adminModal") && document.getElementById("adminModal").style.display === "flex" && document.getElementById("modalTitle").innerText === "Manajemen Staff") {
-                showStaffPanel();
-            }
+            if(document.getElementById("adminModal") && document.getElementById("adminModal").style.display === "flex" && document.getElementById("modalTitle").innerText === "Manajemen Staff") showStaffPanel();
         });
 
         // Render Menu Grid
@@ -1116,7 +1155,7 @@
                                 <img src="${item.img}">
                                 <h3>${item.nama}</h3>
                                 <p>฿ ${formatCurrency(item.harga)}</p>
-                                <button onclick="order('${item.nama}', ${item.harga})">Pesan</button>
+                                <button data-name="${item.nama.replace(/"/g, '&quot;')}" data-price="${item.harga}" onclick="order(this.dataset.name, parseInt(this.dataset.price))">Pesan</button>
                             </div>
                         `;
                     });
@@ -1188,6 +1227,7 @@
                 const pass = prompt("Masukkan Password Admin:");
                 if (pass === "admin123") {
                     isAdmin = true;
+                    localStorage.setItem("isAdmin", "true");
                     document.body.classList.add("admin-mode");
                     document.getElementById("loginBtn").innerText = "Logout Admin";
                     alert("Akses Admin Diberikan!");
@@ -1196,6 +1236,7 @@
                 }
             } else {
                 isAdmin = false;
+                localStorage.setItem("isAdmin", "false");
                 document.body.classList.remove("admin-mode");
                 document.getElementById("loginBtn").innerText = "Login Admin";
                 alert("Akses Admin Dicabut.");
@@ -1280,14 +1321,14 @@
             const name = document.getElementById("newStaffName").value;
             if (name) {
                 staffList.push({ id: Date.now(), nama: name, role: 'Staff' });
-                database.ref('staffList').set(staffList);
+                safeSync('staffList', staffList);
                 showStaffPanel();
             }
         }
 
         function deleteStaff(id) {
             staffList = staffList.filter(s => s.id !== id);
-            database.ref('staffList').set(staffList);
+            safeSync('staffList', staffList);
             showStaffPanel();
         }
 
@@ -1348,8 +1389,11 @@
 
             const newItem = { id: Date.now(), nama, harga, category, img };
             menuItems.push(newItem);
-            database.ref('menuItems').set(menuItems);
-
+            
+            localStorage.setItem("menuItems", JSON.stringify(menuItems));
+            safeSync('menuItems', menuItems);
+            
+            renderMenu();
             closeAdminModal();
 
             // Notifikasi Sukses Custom tanpa Alert mengganggu
@@ -1392,7 +1436,10 @@
             if (newNama && newHarga) {
                 item.nama = newNama;
                 item.harga = parseInt(newHarga);
-                database.ref('menuItems').set(menuItems);
+                
+                safeSync('menuItems', menuItems);
+                
+                renderMenu();
                 showEditMenuPanel();
             }
         }
@@ -1400,7 +1447,10 @@
         function deleteMenu(id) {
             if (confirm("Hapus menu ini?")) {
                 menuItems = menuItems.filter(m => m.id !== id);
-                database.ref('menuItems').set(menuItems);
+                
+                safeSync('menuItems', menuItems);
+                
+                renderMenu();
                 showEditMenuPanel();
             }
         }
@@ -1435,8 +1485,10 @@
         function clearOrders() {
             if (confirm("Kosongkan semua riwayat?")) {
                 allOrders = [];
-                database.ref('allOrders').set(allOrders);
-                showOrderLogPanel();
+                safeSync('allOrders', allOrders);
+                closeAdminModal();
+                if (typeof renderOrders === "function") renderOrders();
+                window.location.hash = "#orderList";
             }
         }
 
@@ -1445,31 +1497,57 @@
         function formatCurrency(number) { return number.toLocaleString('id-ID'); }
 
         function renderOrders() {
-            let table = document.getElementById("orderList");
-            table.innerHTML = "";
-            total = 0;
+            const table = document.getElementById("orderList");
+            if (!table) return;
             
+            let htmlStr = "";
+            let currentTotal = 0;
+            
+            // Re-check global allOrders
+            if (!Array.isArray(allOrders) || allOrders.length === 0) {
+                table.innerHTML = `<tr><td colspan="9" style="padding: 40px; color: #888; background: rgba(0,0,0,0.1);">Belum ada pesanan yang dipilih. Silakan pilih menu di atas!</td></tr>`;
+                const totalH = document.getElementById("totalHarga");
+                if (totalH) totalH.innerText = "0";
+                return;
+            }
+
             allOrders.forEach((o, index) => {
-                let hrg = o.harga || (o.total / o.qty); // fallback
-                let tgl = o.dateOnly || (o.waktu ? o.waktu.split(" ")[0] : "-");
-                let cttn = o.note || "-";
+                const hrg = parseFloat(o.harga) || 0;
+                const qty = parseInt(o.qty) || 0;
+                const itemTotal = parseFloat(o.total) || (hrg * qty);
+                const tgl = o.dateOnly || (o.waktu ? o.waktu.split(" ")[0] : "-");
                 
-                table.innerHTML += `
-                    <tr>
-                        <td class="text-left" style="font-weight:bold">${o.menu}</td>
-                        <td class="text-right">฿ ${formatCurrency(hrg)}</td>
-                        <td>${o.qty}</td>
-                        <td>${tgl}</td>
-                        <td>${o.customer}</td>
-                        <td><span class="badge-address">${o.address}</span></td>
-                        <td class="text-left" style="font-style:italic; color:#fff">${cttn}</td>
-                        <td class="text-right" style="font-weight:bold">฿ ${formatCurrency(o.total)}</td>
-                        <td><button onclick="editOrder(${index})" style="background: rgba(255, 122, 0, 0.2); color: #ff7a00; border: 1px solid #ff7a00; padding: 5px 12px; border-radius: 6px; cursor: pointer; text-transform: uppercase; font-size: 12px; font-weight: bold; transition: 0.3s;" onmouseover="this.style.background='#ff7a00'; this.style.color='#fff'" onmouseout="this.style.background='rgba(255, 122, 0, 0.2)'; this.style.color='#ff7a00'">Edit</button></td>
+                htmlStr += `
+                    <tr style="animation: fadeIn 0.5s ease-out;">
+                        <td class="text-left" style="font-weight:700; color: #fff;">${o.menu || "-"}</td>
+                        <td class="text-right" style="color: #fff;">฿ ${formatCurrency(hrg)}</td>
+                        <td style="color: #fff;"><span style="background: rgba(255,122,0,0.2); padding: 2px 8px; border-radius: 4px;">${qty}</span></td>
+                        <td style="color: #fff;">${tgl}</td>
+                        <td style="color: #fff;">${o.customer || "-"}</td>
+                        <td><span class="badge-address" style="background: rgba(255,122,0,0.1); color: #fff; padding: 4px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.3); font-size: 11px; font-weight: 600;">${o.address || "-"}</span></td>
+                        <td class="text-left" style="font-style:italic; color:#fff; font-size: 13px; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${o.note || '-'}">${o.note || "-"}</td>
+                        <td class="text-right" style="font-weight:900; color: #fff; font-size: 16px;">฿ ${formatCurrency(itemTotal)}</td>
+                        <td>
+                            <div style="display: flex; justify-content: center;">
+                                <button onclick="editOrder(${index})" style="background: #ff7a00; color: #fff; border: none; padding: 6px 15px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 700; transition: 0.3s; box-shadow: 0 2px 5px rgba(255,122,0,0.3);">Edit</button>
+                            </div>
+                        </td>
                     </tr>
                 `;
-                total += o.total;
+                currentTotal += itemTotal;
             });
-            document.getElementById("totalHarga").innerText = formatCurrency(total);
+            
+            table.innerHTML = htmlStr;
+            const totalH = document.getElementById("totalHarga");
+            if (totalH) totalH.innerText = formatCurrency(currentTotal);
+        }
+
+        function deleteOrder(index) {
+            if (confirm("Hapus pesanan ini dari daftar?")) {
+                allOrders.splice(index, 1);
+                safeSync('allOrders', allOrders);
+                renderOrders();
+            }
         }
 
         function editOrder(index) {
@@ -1524,27 +1602,36 @@
             let hrg = order.harga || (order.total / order.qty);
             order.total = hrg * newQty;
 
-            database.ref('allOrders').set(allOrders);
+            safeSync('allOrders', allOrders);
+            
             closeAdminModal();
+            renderOrders();
         }
 
         function order(nama, harga) {
-            const customerName = document.getElementById("customerName").value;
-            const customerAddress = document.getElementById("customerAddress").value;
-            const orderDate = document.getElementById("orderDate").value;
-            const qty = parseInt(document.getElementById("orderQty").value);
-            const note = document.getElementById("orderNote").value || "-";
+            const customerNameInput = document.getElementById("customerName");
+            const customerAddressInput = document.getElementById("customerAddress");
+            const orderDateInput = document.getElementById("orderDate");
+            const qtyInput = document.getElementById("orderQty");
+            const noteInput = document.getElementById("orderNote");
+
+            const customerName = customerNameInput.value.trim();
+            const customerAddress = customerAddressInput.value;
+            const orderDate = orderDateInput.value;
+            const qty = parseInt(qtyInput.value);
+            const note = noteInput.value.trim() || "-";
 
             if (!customerName || !customerAddress || !orderDate || isNaN(qty) || qty <= 0) {
-                alert("Lengkapi Data Pemesan, Alamat, dan Tanggal dahulu!");
+                alert("⚠️ Mohon lengkapi Data Pemesan, Alamat, dan Tanggal sebelum memesan menu.");
+                if (!customerName) customerNameInput.focus();
+                else if (!customerAddress) customerAddressInput.focus();
                 return;
             }
 
-            let subtotal = harga * qty;
+            const subtotal = harga * qty;
 
-            // Save to riwayat and local storage
-            allOrders.push({
-                waktu: orderDate + " " + new Date().toLocaleTimeString(),
+            const newOrder = {
+                waktu: orderDate + " " + new Date().toLocaleTimeString('id-ID'),
                 dateOnly: orderDate,
                 customer: customerName,
                 menu: nama,
@@ -1553,12 +1640,65 @@
                 address: customerAddress,
                 note: note,
                 total: subtotal
-            });
-            database.ref('allOrders').set(allOrders);
+            };
+
+            // Pastikan allOrders adalah array sebelum push
+            if (!Array.isArray(allOrders)) allOrders = [];
+            allOrders.push(newOrder);
+            
+            // Sinkronkan ke LocalStorage dan Firebase
+            localStorage.setItem("allOrders", JSON.stringify(allOrders));
+            safeSync('allOrders', allOrders);
+            
+            // Langsung render untuk respon cepat
+            renderOrders();
+
+            // Reset input transient
+            qtyInput.value = 1;
+            noteInput.value = "";
+
+            // Custom Toast Notification
+            const toast = document.createElement("div");
+            toast.style = "position:fixed; bottom:20px; right:20px; background:linear-gradient(135deg, #28a745, #1e7e34); color:white; padding:18px 25px; border-radius:15px; z-index:99999; box-shadow:0 10px 30px rgba(0,0,0,0.5); animation: slideIn 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; border: 1px solid rgba(255,255,255,0.2); pointer-events:none;";
+            toast.innerHTML = `
+                <div style="display:flex; align-items:center; gap:15px;">
+                    <div style="font-size:30px;">🥡</div>
+                    <div>
+                        <div style="font-weight:900; font-size:16px; margin-bottom:2px;">PESANAN DITAMBAHKAN!</div>
+                        <div style="font-size:13px; opacity:0.9;">${nama} (${qty}x)</div>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(toast);
+
+            setTimeout(() => {
+                toast.style.animation = "slideOut 0.5s ease-in forwards";
+                setTimeout(() => toast.remove(), 500);
+            }, 3000);
+
+            // Scroll ke tabel
+            const target = document.querySelector(".table-container");
+            if (target) {
+                const headerOffset = 100;
+                const elementPosition = target.getBoundingClientRect().top;
+                const offsetPosition = elementPosition + window.pageYOffset - headerOffset;
+
+                window.scrollTo({
+                    top: offsetPosition,
+                    behavior: "smooth"
+                });
+            }
         }
 
         // Initialize Menu on Load
         document.getElementById('orderDate').valueAsDate = new Date();
+
+        // Restore Admin State
+        if (isAdmin) {
+            document.body.classList.add("admin-mode");
+            const btn = document.getElementById("loginBtn");
+            if (btn) btn.innerText = "Logout Admin";
+        }
 
         // How To Order Modal Functions
         function openHowToOrderModal() {
